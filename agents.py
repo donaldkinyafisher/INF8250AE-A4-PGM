@@ -1,5 +1,5 @@
 import os
-os.environ["JAX_DISABLE_JIT"] = "1"
+#os.environ["JAX_DISABLE_JIT"] = "1"
 
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
@@ -310,7 +310,7 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(time_steps))
 
         final_discounted_returns = result[0]  # Discounted returns for all batches
-        return jnp.sum(final_discounted_returns, axis=1)/final_discounted_returns.shape[1] #Averaged for each batch
+        return final_discounted_returns #jnp.sum(final_discounted_returns, axis=1)/final_discounted_returns.shape[1] #Averaged for each batch
 
 
         ### ----------------------------------------------------------------
