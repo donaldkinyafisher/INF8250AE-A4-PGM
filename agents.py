@@ -1,5 +1,5 @@
 import os
-#os.environ["JAX_DISABLE_JIT"] = "1"
+os.environ["JAX_DISABLE_JIT"] = "1"
 
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
@@ -291,9 +291,9 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
 
         final_discounted_returns = result[0]
 
-        avg_return = jnp.sum(final_discounted_returns)/len(final_discounted_returns)
+        #avg_return = jnp.sum(final_discounted_returns)/len(final_discounted_returns)
 
-        return avg_return
+        return final_discounted_returns
 
         ### ----------------------------------------------------------------
 
