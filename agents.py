@@ -1,5 +1,5 @@
 import os
-os.environ["JAX_DISABLE_JIT"] = "1"
+#os.environ["JAX_DISABLE_JIT"] = "1"
 
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
@@ -262,7 +262,6 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         :param float discount_factor: Discount factor to use
         """
         ### ------------------------- To implement -------------------------
-        observations = transitions.observation
         rewards = transitions.reward
         dones = transitions.done
 
@@ -281,17 +280,23 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
             return carry, None
    
         # Identify the number of episodes by counting the number of done events
-        num_episodes = jnp.sum(dones)
+        num_episodes = jnp.sum(dones).astype(jnp.int32)
         
         # Initialize the result array
         discounted_returns = jnp.zeros(num_episodes, dtype=jnp.float32)
 
-        initial_carry = (discounted_returns, 0.0, 0, 0)
-        result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(observations)))
+        initial_carry = (
+        discounted_returns,
+        jnp.array(0.0, dtype=jnp.float32), #G
+        jnp.array(0, dtype=jnp.int32), #k
+        jnp.array(0, dtype=jnp.int32), #episode_idx
+        )
+           
+        result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(rewards)))
 
         final_discounted_returns = result[0]
 
-        #avg_return = jnp.sum(final_discounted_returns)/len(final_discounted_returns)
+        #avg_return = jnp.sum(final_discounted_returns)/final_discounted_returns.shape[0]
 
         return final_discounted_returns
 
