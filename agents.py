@@ -271,23 +271,29 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
             G += (discount_factor**k)*rewards[i]
 
             #If done, and G to discounted returns for episode and reset, otherwise continue and add the next set
-            carry = jnp.where(dones[i], 
-                              (discounted_returns.at[episode_idx].set(G), 0.0, 0, episode_idx+1), 
-                                (discounted_returns, G, k+1, episode_idx)
-            )
+            carry = jax.lax.cond(
+                dones[i], 
+                lambda _: (discounted_returns.at[episode_idx].set(G), 0.0, 0, episode_idx + 1),
+                lambda _: (discounted_returns, G, k + 1, episode_idx),
+                operand=None  # No input is needed for the lambdas
+                )
 
-            return carry
+            return carry, None
    
         # Identify the number of episodes by counting the number of done events
         num_episodes = jnp.sum(dones)
         
         # Initialize the result array
-        discounted_returns = jnp.zeros_like(num_episodes, dtype=jnp.float32)
+        discounted_returns = jnp.zeros(num_episodes, dtype=jnp.float32)
 
         initial_carry = (discounted_returns, 0.0, 0, 0)
         result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(observations)))
 
-        return result[0]
+        final_discounted_returns = result[0]
+
+        avg_return = jnp.sum(final_discounted_returns)/len(final_discounted_returns)
+
+        return avg_return
 
         ### ----------------------------------------------------------------
 
