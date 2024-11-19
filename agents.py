@@ -1,5 +1,5 @@
 import os
-#os.environ["JAX_DISABLE_JIT"] = "1"
+os.environ["JAX_DISABLE_JIT"] = "1"
 
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
@@ -262,43 +262,56 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         :param float discount_factor: Discount factor to use
         """
         ### ------------------------- To implement -------------------------
-        rewards = transitions.reward
-        dones = transitions.done
+       
+        rewards = transitions.reward  # Shape: [batch_size, time_steps]
+        dones = transitions.done      # Shape: [batch_size, time_steps]
+        batch_size, time_steps = rewards.shape
 
-        def compute_episodic_return(carry, i):
-            discounted_returns, G, k, episode_idx = carry        
-            G += (discount_factor**k)*rewards[i]
+        def compute_episodic_return(carry, t):
+            # Unpack carry
+            discounted_returns, G, k, episode_idx = carry  # All have shape [batch_size]
 
-            #If done, and G to discounted returns for episode and reset, otherwise continue and add the next set
-            carry = jax.lax.cond(
-                dones[i], 
-                lambda _: (discounted_returns.at[episode_idx].set(G), 0.0, 0, episode_idx + 1),
-                lambda _: (discounted_returns, G, k + 1, episode_idx),
-                operand=None  # No input is needed for the lambdas
-                )
+            # Compute discounted rewards
+            G += (discount_factor ** k) * rewards[:, t]
 
-            return carry, None
-   
-        # Identify the number of episodes by counting the number of done events
-        num_episodes = jnp.sum(dones).astype(jnp.int32)
-        
-        # Initialize the result array
-        discounted_returns = jnp.zeros(num_episodes, dtype=jnp.float32)
+            # Conditionally reset G and increment episode_idx where done[t] is True
+            # Update discounted_returns if done[t] is True
+            discounted_returns = discounted_returns.at[jnp.arange(batch_size), episode_idx].set(
+                jax.lax.select(dones[:, t], G, discounted_returns[jnp.arange(batch_size), episode_idx])
+            )
 
+            # Reset G where done[t] is True
+            G = jax.lax.select(dones[:, t], jnp.zeros((2,), dtype=jnp.float32), G)
+
+            # Increment or reset k
+            k = jax.lax.select(dones[:, t], jnp.zeros((2,), dtype=jnp.int32), k + 1)
+
+            # Increment episode_idx where done[t] is True
+            episode_idx = jax.lax.select(dones[:, t], episode_idx + 1, episode_idx)
+
+            return (discounted_returns, G, k, episode_idx), None
+
+        # Count episodes per batch (sum `dones` along the time axis)
+        num_episodes = jnp.sum(dones, axis=1).astype(jnp.int32)  # Shape: [batch_size]
+
+        # Initialize result array for discounted returns
+        max_episodes = jnp.max(num_episodes)  # Get the maximum number of episodes across the batch
+        discounted_returns = jnp.zeros((batch_size, max_episodes), dtype=jnp.float32)
+
+        # Initialize carry
         initial_carry = (
-        discounted_returns,
-        jnp.array(0.0, dtype=jnp.float32), #G
-        jnp.array(0, dtype=jnp.int32), #k
-        jnp.array(0, dtype=jnp.int32), #episode_idx
+            discounted_returns,                          # Discounted returns array
+            jnp.zeros(batch_size, dtype=jnp.float32),    # G (cumulative return), shape: [batch_size]
+            jnp.zeros(batch_size, dtype=jnp.int32),      # k (discount step), shape: [batch_size]
+            jnp.zeros(batch_size, dtype=jnp.int32)       # Episode indices, shape: [batch_size]
         )
-           
-        result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(rewards)))
 
-        final_discounted_returns = result[0]
+        # Perform lax.scan over time dimension
+        result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(time_steps))
 
-        #avg_return = jnp.sum(final_discounted_returns)/final_discounted_returns.shape[0]
+        final_discounted_returns = result[0]  # Discounted returns for all batches
+        return jnp.sum(final_discounted_returns, axis=1)/final_discounted_returns.shape[1] #Averaged for each batch
 
-        return final_discounted_returns
 
         ### ----------------------------------------------------------------
 
