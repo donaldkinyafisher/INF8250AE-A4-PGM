@@ -282,7 +282,7 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         discounted_returns = jnp.zeros_like(rewards, dtype=jnp.float32)
 
         initial_carry = (discounted_returns, 0.0, 0)
-        _, result = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(observations)))
+        result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(observations)))
 
         return result[0]
 
