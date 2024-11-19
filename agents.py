@@ -267,21 +267,24 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         dones = transitions.done
 
         def compute_episodic_return(carry, i):
-            discounted_returns, G, k, discount_factor = carry        
+            discounted_returns, G, k, episode_idx = carry        
             G += (discount_factor**k)*rewards[i]
 
             #If done, and G to discounted returns for episode and reset, otherwise continue and add the next set
-            discounted_returns = jnp.where(dones[i], 
-                                           (discounted_returns.at[i].set(G), 0.0, 0), 
-                                           (discounted_returns, G, k+1)
+            carry = jnp.where(dones[i], 
+                              (discounted_returns.at[episode_idx].set(G), 0.0, 0, episode_idx+1), 
+                                (discounted_returns, G, k+1, episode_idx)
             )
 
-            return (discounted_returns, G, k)
+            return carry
    
+        # Identify the number of episodes by counting the number of done events
+        num_episodes = jnp.sum(dones)
+        
         # Initialize the result array
-        discounted_returns = jnp.zeros_like(rewards, dtype=jnp.float32)
+        discounted_returns = jnp.zeros_like(num_episodes, dtype=jnp.float32)
 
-        initial_carry = (discounted_returns, 0.0, 0, discount_factor)
+        initial_carry = (discounted_returns, 0.0, 0, 0)
         result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(len(observations)))
 
         return result[0]
