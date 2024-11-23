@@ -1,9 +1,8 @@
 import os
-#os.environ["JAX_DISABLE_JIT"] = "1"
+os.environ["JAX_DISABLE_JIT"] = "1"
 
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
-
 import chex
 import equinox as eqx
 import jax
@@ -11,7 +10,6 @@ import jax.numpy as jnp
 import optax
 from flax import struct
 from jax.experimental import io_callback
-
 from utils import Logger, Transition
 
 
@@ -144,18 +142,17 @@ class Policy(ABC, Generic[TPolicyState]):
         """
         ### ------------------------- To implement -------------------------
 
-        #model = #How to call the model here?
-        #model_params = policy_state.actor_network_state.model_parameters.mlp
-        #actions = model(model_params, observation) #TODO: Does this really fetch the possible actions?
-        #weights = jnp.where(action_mask, actions, False)
+        #Use policy_state and observation to get action probabilities 
+        action_probabilities = self.get_action_probabilities(policy_state.actor_network_state.model_parameters, observation, action_mask)
         
-        normalized_action_mask = action_mask/jnp.sum(action_mask) 
-
         #Create and select key
         key, subkey = jax.random.split(key, 2)
-        #sampled_action = jax.random.choice(subkey, a=actions.shape[0], p=normalized_weights) # Should return index of the action array
 
-        sampled_action = jax.random.choice(subkey, a=action_mask.shape[0], p=normalized_action_mask)
+        #Integers that represent the action arms
+        action_idx = jnp.arange(action_probabilities.shape[0])
+
+        #Sample action
+        sampled_action = jax.random.choice(subkey, a = action_idx, p=action_probabilities)
 
         return sampled_action
         ### ----------------------------------------------------------------
@@ -262,59 +259,29 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         :param float discount_factor: Discount factor to use
         """
         ### ------------------------- To implement -------------------------
-       
         rewards = transitions.reward  # Shape: [batch_size, time_steps]
         dones = transitions.done      # Shape: [batch_size, time_steps]
-        batch_size, time_steps = rewards.shape
 
-        def compute_episodic_return(carry, t):
-            # Unpack carry
-            discounted_returns, G, k, episode_idx = carry  # All have shape [batch_size]
+        rewards_reversed, dones_reversed = rewards[::-1], dones[::-1]
+        episode_idx = jnp.where(dones_reversed)
 
-            # Compute discounted rewards
-            G += (discount_factor ** k) * rewards[:, t]
+        G = 0
+        discounted_returns = jnp.zeros(len(episode_idx[0]))
+        episode_counter = 0
 
-            # Conditionally reset G and increment episode_idx where done[t] is True
-            # Update discounted_returns if done[t] is True
-            discounted_returns = discounted_returns.at[jnp.arange(batch_size), episode_idx].set(
-                jax.lax.select(dones[:, t], G, discounted_returns[jnp.arange(batch_size), episode_idx])
-            )
+        for i in range(len(rewards_reversed)):
+        
+            # Compute current return
+            G = rewards_reversed[i] + discount_factor * G 
 
-            # Reset G where done[t] is True
-            G = jax.lax.select(dones[:, t], jnp.zeros((2,), dtype=jnp.float32), G)
+            if jnp.isin(i, episode_idx[0]):
+                discounted_returns = discounted_returns.at[episode_counter].set(G)
+                G = 0
+                episode_counter += 1 
+                
+        avg_discounted_returns = jnp.mean(discounted_returns)
 
-            # Increment or reset k
-            k = jax.lax.select(dones[:, t], jnp.zeros((2,), dtype=jnp.int32), k + 1)
-
-            # Increment episode_idx where done[t] is True
-            episode_idx = jax.lax.select(dones[:, t], episode_idx + 1, episode_idx)
-
-            return (discounted_returns, G, k, episode_idx), None
-
-        # Count episodes per batch (sum `dones` along the time axis)
-        num_episodes = jnp.sum(dones, axis=1).astype(jnp.int32)  # Shape: [batch_size]
-
-        # Initialize result array for discounted returns
-        max_episodes = jnp.max(num_episodes)  # Get the maximum number of episodes across the batch
-        discounted_returns = jnp.zeros((batch_size, max_episodes), dtype=jnp.float32)
-
-        # Initialize carry
-        initial_carry = (
-            discounted_returns,                          # Discounted returns array
-            jnp.zeros(batch_size, dtype=jnp.float32),    # G (cumulative return), shape: [batch_size]
-            jnp.zeros(batch_size, dtype=jnp.int32),      # k (discount step), shape: [batch_size]
-            jnp.zeros(batch_size, dtype=jnp.int32)       # Episode indices, shape: [batch_size]
-        )
-
-        # Perform lax.scan over time dimension
-        result, _ = jax.lax.scan(compute_episodic_return, initial_carry, jnp.arange(time_steps))
-
-        final_discounted_returns = result[0]  # Discounted returns for all batches
-        return final_discounted_returns #jnp.sum(final_discounted_returns, axis=1)/final_discounted_returns.shape[1] #Averaged for each batch
-
-
-        ### ----------------------------------------------------------------
-
+        return avg_discounted_returns
 
     def get_action_probabilities(self, model_parameters: eqx.Module, observation: jax.Array, action_mask: jax.Array) -> jax.Array:
         """
@@ -329,15 +296,15 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         """
         ### ------------------------- To implement -------------------------
 
+        logits = self.actor.get_logits(model_parameters, observation)
 
-        #Calculate preferences for each state, action, parameters
-        #model = #TODO: How to call the MLP model??
-        #h = model(model_parameters, observation)
-
-        #action_probabilities computed using the softmax
-        h = action_mask/jnp.sum(action_mask)
-        e_h = jnp.exp(jnp.array(h)) #Array of shape[4]
+        #Apply softmax
+        e_h = jnp.exp(logits) #Array of shape[4]
         action_probabilities = e_h / e_h.sum(axis=0)
+
+        #Renormalize over viable actions
+        action_probabilities = action_probabilities * action_mask
+        action_probabilities = action_probabilities/action_probabilities.sum(axis=0)
 
         return action_probabilities
 
@@ -354,15 +321,19 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         :return log_dict (dict[str, float]): Dictionnary containing entries to log
         """
         ### ------------------------- To implement -------------------------
-        observations, actions = transitions.observation, transitions.action
+        observations, actions, dones, action_mask = transitions.observation, transitions.action, transitions.done, transitions.action_mask
 
-        #Compute action probabilities
-        action_probs = model_parameters(observations)
-        log_probabilities = jnp.log(action_probs[actions])
-
+        #Get discounted returns - Batch form
         discounted_returns = self.compute_discounted_returns(transitions, self.discount_factor)
-        
-        loss = -jnp.sum(discounted_returns*log_probabilities) #Element by element addition and sum to get values
+
+        action_log_probabilities = jnp.zeros(observations.shape[0])
+        #Compute action probabilities
+        for i in range(observations.shape[0]):
+            action_probabilities = self.get_action_probabilities(model_parameters, observations[i], action_mask[i])
+            log_probabilities = jnp.log(action_probabilities[actions[i]])
+            action_log_probabilities = action_log_probabilities.at[i].set(log_probabilities)
+
+        loss = -jnp.sum(discounted_returns*action_log_probabilities)
         ### ----------------------------------------------------------------
         return loss, {"Actor loss": loss}
 
@@ -415,6 +386,17 @@ class BaseActorCriticPolicy(Policy[TActorCriticState], Generic[TActorCriticState
             Forbidden actions must have a probability of 0.
         """
         ### ------------------------- To implement -------------------------
+        logits = self.actor.get_logits(model_parameters, observation)
+
+        #Apply softmax
+        e_h = jnp.exp(logits) #Array of shape[4]
+        action_probabilities = e_h / e_h.sum(axis=0)
+
+        #Renormalize over viable actions
+        action_probabilities = action_probabilities * action_mask
+        action_probabilities = action_probabilities/action_probabilities.sum(axis=0)
+
+        return action_probabilities
 
         ### ----------------------------------------------------------------
 
