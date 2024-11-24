@@ -1,5 +1,5 @@
 import os
-os.environ["JAX_DISABLE_JIT"] = "1"
+#os.environ["JAX_DISABLE_JIT"] = "1"
 
 from abc import ABC, abstractmethod
 from typing import Generic, Optional, TypeVar
@@ -460,9 +460,17 @@ class ReinforceBaselinePolicy(ActorCriticPolicy, ReinforcePolicy):
         """
         actor_model_parameters, critic_model_parameters = model_parameters
         ### ------------------------- To implement -------------------------
-        actor_loss = ...
-        critic_loss = ...
-        loss = ...
+        
+        #Get Gt
+
+        #Get pi(a|s)
+        #action_log_probabilities
+
+        #Get Vpi(s) -> We need to define this with jax.lax.stop_gradient to prevent it being differentiated
+        
+        actor_loss = ... #Define actor
+        critic_loss = ...   #(G - Vpi)^2
+        loss = ... #-action_log_probabilities*At
         ### ----------------------------------------------------------------
 
         loss_dict = {
