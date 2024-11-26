@@ -261,27 +261,43 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         ### ------------------------- To implement -------------------------
         rewards = transitions.reward  # Shape: [batch_size, time_steps]
         dones = transitions.done      # Shape: [batch_size, time_steps]
-
-        rewards_reversed, dones_reversed = rewards[::-1], dones[::-1]
-        episode_idx = jnp.where(dones_reversed)
-
-        G = 0
-        discounted_returns = jnp.zeros(len(episode_idx[0]))
-        episode_counter = 0
-
-        for i in range(len(rewards_reversed)):
+        time_steps = dones.shape[0]
         
-            # Compute current return
-            G = rewards_reversed[i] + discount_factor * G 
-
-            if jnp.isin(i, episode_idx[0]):
-                discounted_returns = discounted_returns.at[episode_counter].set(G)
-                G = 0
-                episode_counter += 1 
+        G = jnp.zeros_like(rewards)
+        """ 
+        # Loop through time steps in reverse order
+        for t in reversed(range(time_steps)):
+            if t == time_steps - 1:
+                # Last time step: G_t = reward_t (no future rewards)
+                G = G.at[t].set(rewards[t])
+            else:
+                # Accumulate rewards
+                G = G.at[t].set(
+                    rewards[t] + discount_factor * G[t + 1] * (1.0 - dones[t])
+            )
+        """
                 
-        avg_discounted_returns = jnp.mean(discounted_returns)
+        # Reverse time order: we will use `jax.lax.scan`
+        def step(carry, t):
+            G_next = carry  # Discounted return from the next time step
+            reward_t = rewards[t]
+            done_t = dones[t]
 
-        return avg_discounted_returns
+            # Compute discounted return for time step t
+            G_t = reward_t + discount_factor * G_next * (1.0 - done_t)
+            return G_t, G_t
+
+        # Run the scan in reverse order
+        G, _ = jax.lax.scan(
+            step,
+            G,               # Initial carry (final returns start as 0)
+            jnp.arange(time_steps - 1, -1, -1)   # Time steps in reverse order)
+        )
+                                              
+        # Reverse the output of the scan to match the original order
+        G = G[::-1]
+
+        return G
 
     def get_action_probabilities(self, model_parameters: eqx.Module, observation: jax.Array, action_mask: jax.Array) -> jax.Array:
         """
@@ -460,17 +476,31 @@ class ReinforceBaselinePolicy(ActorCriticPolicy, ReinforcePolicy):
         """
         actor_model_parameters, critic_model_parameters = model_parameters
         ### ------------------------- To implement -------------------------
+
+        def get_state_value_est():
+            #Get Vpi(s) -> We need to define this with jax.lax.stop_gradient to prevent it being differentiated
+            return jax.lax.stop_gradient(self.actor.get_logits(observations, critic_model_parameters))
         
+        observations, actions, action_mask = transitions.observation, transitions.action, transitions.action_mask
+
         #Get Gt
+        G = self.compute_discounted_returns(transitions, discount_factor=self.discount_factor)
+        
+        #Compute Delta
+        state_value_est = get_state_value_est()
+        delta = G - state_value_est
 
         #Get pi(a|s)
-        #action_log_probabilities
-
-        #Get Vpi(s) -> We need to define this with jax.lax.stop_gradient to prevent it being differentiated
+        action_log_probabilities = jnp.zeros(observations.shape[0])
+        #Compute action probabilities
+        for i in range(observations.shape[0]):
+            action_probabilities = self.get_action_probabilities(actor_model_parameters, observations[i], action_mask[i])
+            log_probabilities = jnp.log(action_probabilities[actions[i]])
+            action_log_probabilities = action_log_probabilities.at[i].set(log_probabilities)
         
-        actor_loss = ... #Define actor
-        critic_loss = ...   #(G - Vpi)^2
-        loss = ... #-action_log_probabilities*At
+        actor_loss = -jnp.sum(action_log_probabilities*delta) #Define actor
+        critic_loss = delta*jax.grad(state_value_est)   #(G - Vpi)^2
+        loss = ... 
         ### ----------------------------------------------------------------
 
         loss_dict = {
