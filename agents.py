@@ -349,7 +349,7 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
             jnp.arange(observations.shape[0]),
         )
 
-        loss = -jnp.sum(discounted_returns*action_log_probabilities)
+        loss = -jnp.mean(discounted_returns*action_log_probabilities)
         ### ----------------------------------------------------------------
         return loss, {"Actor loss": loss}
 
@@ -435,9 +435,46 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         """
         actor_parameters, critic_parameters = model_parameters
         ### ------------------------- To implement -------------------------
-        actor_loss = ...
-        critic_loss = ...
-        loss = ...
+        observations, actions, action_mask, rewards, dones, next_observation = (transitions.observation, 
+                                                       transitions.action, 
+                                                       transitions.action_mask,
+                                                       transitions.reward,
+                                                       transitions.done,
+                                                       transitions.next_observation
+                                                       ) #All variables are batch and occur at timestep_t
+
+        #Fix learning rate
+        alpha = 1e-3 #TODO: Can i fetch this from Network Class? policy_state = self.get_init_state(), policy_state.actor_network_state.optimizer_state()
+
+        #Get V_phi_(s)
+        V_phi_s = self.critic.get_batch_logits(critic_parameters, observations)
+
+        #Get V_phi_(s')
+        V_phi_next_s = self.critic.get_logits(critic_parameters, next_observation)
+
+        #Compute advantage
+        advantage = jax.lax.stop_gradient(rewards - self.discount_factor*V_phi_next_s(1 - dones)) #Advantage accounts for if V_s is the terminal state
+
+        #Get log pi(a|s, theta)
+        def compute_log_prob(carry, idx):
+            """Helper function for scan to compute log probabilities."""
+            action_probabilities = self.get_action_probabilities(
+                actor_parameters, observations[idx], action_mask[idx]
+            )
+            log_probabilities = jnp.log(action_probabilities[actions[idx]])
+            return carry, log_probabilities
+
+        # Use lax.scan to compute all action log probabilities
+        _, action_log_probabilities = jax.lax.scan(
+            compute_log_prob,
+            None,  # carry is not needed
+            jnp.arange(observations.shape[0]),
+        )
+        
+        #Compute losses
+        actor_loss =  -jnp.mean(action_log_probabilities*(advantage - V_phi_s))
+        critic_loss = -0.5*jnp.mean((V_phi_s - advantage)**2) 
+        loss = alpha*actor_loss + (1-alpha)*critic_loss
         ### ----------------------------------------------------------------
 
         loss_dict = {
@@ -475,32 +512,44 @@ class ReinforceBaselinePolicy(ActorCriticPolicy, ReinforcePolicy):
         :return log_dict (dict[str, float]): Dictionnary containing entries to log
         """
         actor_model_parameters, critic_model_parameters = model_parameters
-        ### ------------------------- To implement -------------------------
+        ### ------------------------- To implement -------------------------        
+        observations, actions, action_mask = (transitions.observation, 
+                                              transitions.action, 
+                                              transitions.action_mask
+                                              )
 
-        def get_state_value_est():
-            #Get Vpi(s) -> We need to define this with jax.lax.stop_gradient to prevent it being differentiated
-            return jax.lax.stop_gradient(self.actor.get_logits(observations, critic_model_parameters))
-        
-        observations, actions, action_mask = transitions.observation, transitions.action, transitions.action_mask
+        #Fix learning rate
+        alpha = 1e-3 #TODO: Can i fetch this from Network Class? policy_state = self.get_init_state(), policy_state.actor_network_state.optimizer_state()
 
         #Get Gt
         G = self.compute_discounted_returns(transitions, discount_factor=self.discount_factor)
-        
-        #Compute Delta
-        state_value_est = get_state_value_est()
-        delta = G - state_value_est
 
-        #Get pi(a|s)
-        action_log_probabilities = jnp.zeros(observations.shape[0])
-        #Compute action probabilities
-        for i in range(observations.shape[0]):
-            action_probabilities = self.get_action_probabilities(actor_model_parameters, observations[i], action_mask[i])
-            log_probabilities = jnp.log(action_probabilities[actions[i]])
-            action_log_probabilities = action_log_probabilities.at[i].set(log_probabilities)
+        #Use V_phi_(s) as the baseline
+        V_phi_s = self.critic.get_batch_logits(critic_model_parameters, observations)
+
+        #Compute advantage
+        advantage = jax.lax.stop_gradient(G - V_phi_s)
+
+        #Get log pi(a|s, theta)
+        def compute_log_prob(carry, idx):
+            """Helper function for scan to compute log probabilities."""
+            action_probabilities = self.get_action_probabilities(
+                actor_model_parameters, observations[idx], action_mask[idx]
+            )
+            log_probabilities = jnp.log(action_probabilities[actions[idx]])
+            return carry, log_probabilities
+
+        # Use lax.scan to compute all action log probabilities
+        _, action_log_probabilities = jax.lax.scan(
+            compute_log_prob,
+            None,  # carry is not needed
+            jnp.arange(observations.shape[0]),
+        )
         
-        actor_loss = -jnp.sum(action_log_probabilities*delta) #Define actor
-        critic_loss = delta*jax.grad(state_value_est)   #(G - Vpi)^2
-        loss = ... 
+        #Compute losses
+        actor_loss =  -jnp.mean(action_log_probabilities*advantage)
+        critic_loss = -jnp.mean(advantage**2)   #(G - Vpi)^2
+        loss = alpha*actor_loss + (1-alpha)*critic_loss
         ### ----------------------------------------------------------------
 
         loss_dict = {
