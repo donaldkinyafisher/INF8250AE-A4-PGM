@@ -443,17 +443,15 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
                                                        transitions.next_observation
                                                        ) #All variables are batch and occur at timestep_t
 
-        #Fix learning rate
-        alpha = 1e-3 #TODO: Can i fetch this from Network Class? policy_state = self.get_init_state(), policy_state.actor_network_state.optimizer_state()
-
         #Get V_phi_(s)
         V_phi_s = self.critic.get_batch_logits(critic_parameters, observations)
 
         #Get V_phi_(s')
         V_phi_next_s = self.critic.get_batch_logits(critic_parameters, next_observation)
 
-        #Compute advantage
-        advantage = jax.lax.stop_gradient(rewards + self.discount_factor*V_phi_next_s*(1.0 - dones)) #Advantage accounts for if V_s is the terminal state
+        #Compute advantage - dones accounts for if V_s is the terminal state
+        actor_advantage = rewards + self.discount_factor*jax.lax.stop_gradient(V_phi_next_s*(1.0 - dones)) - jax.lax.stop_gradient(V_phi_s)
+        critic_advantage = V_phi_s - jax.lax.stop_gradient(rewards + self.discount_factor*V_phi_next_s*(1.0 - dones))
 
         #Get log pi(a|s, theta)
         def compute_log_prob(carry, idx):
@@ -472,8 +470,8 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         )
         
         #Compute losses
-        actor_loss =  -jnp.mean(action_log_probabilities*(advantage - V_phi_s))
-        critic_loss = 0.5*jnp.mean((V_phi_s - advantage)**2) 
+        actor_loss =  -jnp.mean(action_log_probabilities*(actor_advantage))
+        critic_loss = 0.5*jnp.mean(critic_advantage**2) 
         loss = actor_loss + critic_loss
         ### ----------------------------------------------------------------
 
@@ -518,9 +516,6 @@ class ReinforceBaselinePolicy(ActorCriticPolicy, ReinforcePolicy):
                                               transitions.action_mask
                                               )
 
-        #Fix learning rate
-        alpha = 1e-3 #TODO: Can i fetch this from Network Class? policy_state = self.get_init_state(), policy_state.actor_network_state.optimizer_state()
-
         #Get Gt
         G = self.compute_discounted_returns(transitions, discount_factor=self.discount_factor)
 
@@ -528,7 +523,7 @@ class ReinforceBaselinePolicy(ActorCriticPolicy, ReinforcePolicy):
         V_phi_s = self.critic.get_batch_logits(critic_model_parameters, observations)
 
         #Compute advantage
-        advantage = jax.lax.stop_gradient(G - V_phi_s)
+        advantage = G - jax.lax.stop_gradient(V_phi_s)
 
         #Get log pi(a|s, theta)
         def compute_log_prob(carry, idx):
