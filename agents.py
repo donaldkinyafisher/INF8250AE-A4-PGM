@@ -450,10 +450,10 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         V_phi_s = self.critic.get_batch_logits(critic_parameters, observations)
 
         #Get V_phi_(s')
-        V_phi_next_s = self.critic.get_logits(critic_parameters, next_observation)
+        V_phi_next_s = self.critic.get_batch_logits(critic_parameters, next_observation)
 
         #Compute advantage
-        advantage = jax.lax.stop_gradient(rewards - self.discount_factor*V_phi_next_s(1 - dones)) #Advantage accounts for if V_s is the terminal state
+        advantage = jax.lax.stop_gradient(rewards - self.discount_factor*V_phi_next_s*(1.0 - dones)) #Advantage accounts for if V_s is the terminal state
 
         #Get log pi(a|s, theta)
         def compute_log_prob(carry, idx):
