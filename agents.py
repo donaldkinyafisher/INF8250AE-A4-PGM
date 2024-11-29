@@ -264,18 +264,6 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         time_steps = dones.shape[0]
         
         G = jnp.zeros_like(rewards)
-        """ 
-        # Loop through time steps in reverse order
-        for t in reversed(range(time_steps)):
-            if t == time_steps - 1:
-                # Last time step: G_t = reward_t (no future rewards)
-                G = G.at[t].set(rewards[t])
-            else:
-                # Accumulate rewards
-                G = G.at[t].set(
-                    rewards[t] + discount_factor * G[t + 1] * (1.0 - dones[t])
-            )
-        """
                 
         # Reverse time order: we will use `jax.lax.scan`
         def step(carry, t):
@@ -337,17 +325,29 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         :return log_dict (dict[str, float]): Dictionnary containing entries to log
         """
         ### ------------------------- To implement -------------------------
-        observations, actions, dones, action_mask = transitions.observation, transitions.action, transitions.done, transitions.action_mask
+        observations, actions, action_mask = (
+        transitions.observation,
+        transitions.action,
+        transitions.action_mask
+        )
 
-        #Get discounted returns - Batch form
+        #Get discounted returns 
         discounted_returns = self.compute_discounted_returns(transitions, self.discount_factor)
 
-        action_log_probabilities = jnp.zeros(observations.shape[0])
-        #Compute action probabilities
-        for i in range(observations.shape[0]):
-            action_probabilities = self.get_action_probabilities(model_parameters, observations[i], action_mask[i])
-            log_probabilities = jnp.log(action_probabilities[actions[i]])
-            action_log_probabilities = action_log_probabilities.at[i].set(log_probabilities)
+        def compute_log_prob(carry, idx):
+            """Helper function for scan to compute log probabilities."""
+            action_probabilities = self.get_action_probabilities(
+                model_parameters, observations[idx], action_mask[idx]
+            )
+            log_probabilities = jnp.log(action_probabilities[actions[idx]])
+            return carry, log_probabilities
+
+        # Use lax.scan to compute all action log probabilities
+        _, action_log_probabilities = jax.lax.scan(
+            compute_log_prob,
+            None,  # carry is not needed
+            jnp.arange(observations.shape[0]),
+        )
 
         loss = -jnp.sum(discounted_returns*action_log_probabilities)
         ### ----------------------------------------------------------------
