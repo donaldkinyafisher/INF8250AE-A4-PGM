@@ -453,7 +453,7 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         V_phi_next_s = self.critic.get_batch_logits(critic_parameters, next_observation)
 
         #Compute advantage
-        advantage = jax.lax.stop_gradient(rewards - self.discount_factor*V_phi_next_s*(1.0 - dones)) #Advantage accounts for if V_s is the terminal state
+        advantage = jax.lax.stop_gradient(rewards + self.discount_factor*V_phi_next_s*(1.0 - dones)) #Advantage accounts for if V_s is the terminal state
 
         #Get log pi(a|s, theta)
         def compute_log_prob(carry, idx):
@@ -473,8 +473,8 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         
         #Compute losses
         actor_loss =  -jnp.mean(action_log_probabilities*(advantage - V_phi_s))
-        critic_loss = -0.5*jnp.mean((V_phi_s - advantage)**2) 
-        loss = alpha*actor_loss + (1-alpha)*critic_loss
+        critic_loss = 0.5*jnp.mean((V_phi_s - advantage)**2) 
+        loss = actor_loss + critic_loss
         ### ----------------------------------------------------------------
 
         loss_dict = {
@@ -548,8 +548,8 @@ class ReinforceBaselinePolicy(ActorCriticPolicy, ReinforcePolicy):
         
         #Compute losses
         actor_loss =  -jnp.mean(action_log_probabilities*advantage)
-        critic_loss = -jnp.mean(advantage**2)   #(G - Vpi)^2
-        loss = alpha*actor_loss + (1-alpha)*critic_loss
+        critic_loss = jnp.mean(advantage**2)   #(G - Vpi)^2
+        loss = actor_loss + critic_loss
         ### ----------------------------------------------------------------
 
         loss_dict = {
