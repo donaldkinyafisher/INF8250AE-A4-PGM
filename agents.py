@@ -259,7 +259,9 @@ class ReinforcePolicy(Policy[ReinforcePolicyState]):
         :param float discount_factor: Discount factor to use
         """
         ### ------------------------- To implement -------------------------
+
         rewards = transitions.reward  # Shape: [batch_size, time_steps]
+        rewards = jnp.clip(rewards, -20.0, 20.0) #Clip rewards
         dones = transitions.done      # Shape: [batch_size, time_steps]
         time_steps = dones.shape[0]
         
@@ -449,9 +451,13 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         #Get V_phi_(s')
         V_phi_next_s = self.critic.get_batch_logits(critic_parameters, next_observation)
 
+        #Clip rewards to stabilise loss function
+        rewards = jnp.clip(rewards, -20, 20)
+
         #Compute advantage - dones accounts for if V_s is the terminal state
-        actor_advantage = rewards + self.discount_factor*jax.lax.stop_gradient(V_phi_next_s*(1.0 - dones)) - jax.lax.stop_gradient(V_phi_s)
-        critic_advantage = V_phi_s - jax.lax.stop_gradient(rewards + self.discount_factor*V_phi_next_s*(1.0 - dones))
+        td_error = rewards + self.discount_factor*V_phi_next_s*(1.0 - dones) - V_phi_s
+
+        td_objective = V_phi_s - jax.lax.stop_gradient(rewards + self.discount_factor*V_phi_next_s*(1.0 - dones))
 
         #Get log pi(a|s, theta)
         def compute_log_prob(carry, idx):
@@ -470,8 +476,8 @@ class ActorCriticPolicy(BaseActorCriticPolicy[ActorCriticState]):
         )
         
         #Compute losses
-        actor_loss =  -jnp.mean(action_log_probabilities*(actor_advantage))
-        critic_loss = 0.5*jnp.mean(critic_advantage**2) 
+        actor_loss =  -jnp.mean(action_log_probabilities*jax.lax.stop_gradient(td_error))
+        critic_loss = 0.5*jnp.mean((td_objective**2)) 
         loss = actor_loss + critic_loss
         ### ----------------------------------------------------------------
 
